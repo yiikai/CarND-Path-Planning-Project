@@ -163,6 +163,69 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s, const vec
 	return {x,y};
 
 }
+
+template<typename Sen_Fus>
+bool isCarInLine(Sen_Fus sensor_fusion,int lane,int previous_size,double car_last_time_s)
+{
+	for(int i = 0 ; i < sensor_fusion.size(); i++)
+	{
+		double sensor_d = sensor_fusion[i][6];
+		if((sensor_d > lane * 4) && (sensor_d < (lane+1)*4))
+		{
+			//This sensor car is in the same lane
+			//need consider change lane and low speed
+			double vx = sensor_fusion[i][3];
+			double vy = sensor_fusion[i][4];
+			double this_car_v = sqrt(vx*vx + vy*vy);
+			double this_car_s = sensor_fusion[i][5];
+				
+			double this_car_projected_s = this_car_s + (previous_size * 0.02 * this_car_v);
+			if((fabs(this_car_projected_s - car_last_time_s) < 20) && this_car_projected_s > car_last_time_s )
+			{
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+template<typename Sen_Fus>
+bool isChangeLaneDanger(Sen_Fus sensor_fusion,int changeline, int previous_size, double car_last_time_s, double& closedist)
+{
+	double closest_dist = 999999;
+	for(int i = 0; i < sensor_fusion.size(); i++)
+	{
+		double this_car_lane = sensor_fusion[i][6];
+		if((this_car_lane > changeline*4) && (this_car_lane < (changeline+1)*4))
+		{
+			//find there are a car in which lane we change
+			double vx = sensor_fusion[i][3];
+			double vy = sensor_fusion[i][4];
+			double v = sqrt(vx*vx + vy*vy);
+			double this_car_s = sensor_fusion[i][5];
+			
+			double this_car_projected_s = this_car_s + (previous_size * 0.02 * v);
+			if(fabs(this_car_projected_s - car_last_time_s) < 15)
+			{
+				cout<<"dist too small so can not change lane"<<endl;
+				return false;
+			}
+			if( (this_car_projected_s > car_last_time_s) && ((this_car_projected_s - car_last_time_s) > 15) )
+			{
+				cout<<"change lane car dist larger than our car"<<endl;
+				double dist = this_car_projected_s - car_last_time_s;
+				if(dist < closest_dist)
+				{
+					closest_dist = dist;
+				}
+			}	
+		}
+	}
+	closedist = closest_dist;
+	cout<<"Change lane ok, change Lane: " << changeline<<" the closet car distance: "<<closedist<<endl;
+	return true;
+}
+
 int main() {
   uWS::Hub h;
 
@@ -200,8 +263,7 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
   int lane = 1;
-  double ref_vel = 49.5;
-
+  double ref_vel = 0.0;
 
 	  h.onMessage([&lane,&ref_vel,&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
@@ -241,6 +303,65 @@ int main() {
           	auto sensor_fusion = j[1]["sensor_fusion"];
 			
 			int prev_size = previous_path_x.size();
+			bool slowDown = false;
+
+			double car_last_time_s = car_s;
+			if(prev_size > 0)
+			{
+				car_last_time_s = end_path_s;
+			}
+				
+			if(isCarInLine(sensor_fusion,lane,prev_size,car_last_time_s))
+			{
+				slowDown = true;
+				cout<<"Now a car in front of our car"<<endl;
+				cout<<"current is at "<<lane<<endl;
+				//decide CL or CR and slow down
+				if(lane == 0)
+				{
+					//the most left
+					double closest_dist = 0;
+					if(isChangeLaneDanger(sensor_fusion,1,prev_size,car_last_time_s,closest_dist))
+					{
+						lane = 1;
+					}
+				}
+				else if(lane == 1)
+				{
+					//in the middle
+					double closest_dist = 0;
+					if(isChangeLaneDanger(sensor_fusion,0,prev_size,car_last_time_s,closest_dist))
+					{
+						lane = 0;
+					}
+					else if(isChangeLaneDanger(sensor_fusion,2,prev_size,car_last_time_s,closest_dist))
+					{
+						lane = 2;
+					}
+				}
+				else
+				{
+					//in the most right
+					double closest_dist = 0;
+					if(isChangeLaneDanger(sensor_fusion,1,prev_size,car_last_time_s,closest_dist))
+					{
+						lane = 1;
+					}
+				}
+					
+			}	
+			if(slowDown)
+			{
+				if(ref_vel > 48)
+				{
+					ref_vel -= .55;
+				}
+			}
+			else if(ref_vel < 48)
+			{
+					ref_vel += .55;
+			}
+					
 			vector<double> ptsx;
 			vector<double> ptsy;
 			
@@ -277,9 +398,9 @@ int main() {
 			}
 			
 			//in farnet and evenly 30m spaced points ahead of the starting reference
-			vector<double> next_wp0 = getXY(car_s + 30,6,map_waypoints_s,map_waypoints_x,map_waypoints_y);
-			vector<double> next_wp1 = getXY(car_s + 60,6,map_waypoints_s,map_waypoints_x,map_waypoints_y);
-			vector<double> next_wp2 = getXY(car_s + 90,6,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+			vector<double> next_wp0 = getXY(car_s + 30,lane*4+2,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+			vector<double> next_wp1 = getXY(car_s + 60,lane*4+2,map_waypoints_s,map_waypoints_x,map_waypoints_y);
+			vector<double> next_wp2 = getXY(car_s + 90,lane*4+2,map_waypoints_s,map_waypoints_x,map_waypoints_y);
 				
 			ptsx.push_back(next_wp0[0]);
 			ptsx.push_back(next_wp1[0]);
